@@ -1,0 +1,168 @@
+import autogen
+from autogen.agentchat import AssistantAgent, UserProxyAgent
+import autogen.autogen
+import streamlit as st
+import ast
+import time
+import os
+
+global total_history
+total_history = []
+
+os.environ["AZURE_OPENAI_API_KEY"] = "api-key"
+os.environ["AZURE_OPENAI_ENDPOINT"] = "endpoint"
+
+config_list = [
+        {
+            "model": "gpt-4",
+            "api_key": os.getenv('AZURE_OPENAI_API_KEY'),
+            "base_url": os.getenv('AZURE_OPENAI_ENDPOINT'),
+            "api_type": "azure",
+            "api_version": "2024-02-01"
+    }
+]
+
+st.title('SLAM')
+
+def stream_data(message):
+    for word in message.split(" "):
+        yield word + " "
+        time.sleep(0.005)
+
+
+
+class TrackableAssistantAgent(AssistantAgent):
+        
+    
+    def _process_message_before_send(self, message, recipient, silent):
+        print("processing message")
+        hook_list = self.hook_lists["process_message_before_send"]
+        for hook in hook_list:
+            message = hook(sender=self, message=message, recipient=recipient, silent=silent)
+        
+        with st.chat_message(self.name):
+            st.write(f"{self.name}:\n")
+            st.write_stream(stream_data(message))
+        return message
+        
+
+class TrackableUserProxyAgent(UserProxyAgent):
+      
+
+    def _process_message_before_send(self, message, recipient, silent):
+
+        hook_list = self.hook_lists["process_message_before_send"]
+
+        for hook in hook_list:
+            message = hook(sender=self, message=message, recipient=recipient, silent=silent)
+
+        with st.chat_message(self.name):
+            st.write_stream(stream_data(message))
+
+        return message
+    
+
+BA = TrackableAssistantAgent(
+    name="Business_Analyst",
+    system_message="You are a Business Analyst. WheTERMINATE you receive a prompt, you will think and reason what could be possible solution to the given problem, what features would the solution require, what can be leveraged to make the solution profitable.",
+    llm_config={
+        "config_list": config_list,
+    },
+    max_consecutive_auto_reply=2,
+    human_input_mode="TERMINATE",
+)
+
+Architect = TrackableAssistantAgent(
+    name="Architect",
+    system_message="You are a Software Architect. You develop the architecture for a particular solution (message that you receive). You mention the languages, frameworks, suitable databases (if any), user-client architecture, apis and tools required for the best possible architecture to the solution.",
+    llm_config={
+        "config_list": config_list,
+    },
+    max_consecutive_auto_reply=2,
+    human_input_mode="TERMINATE",
+)
+
+Developer = TrackableAssistantAgent(
+    name="Developer",
+    system_message="You are a software developer. Based on the input, you will generate code or multiple code snippets for the proposed architecture. You will use the specifications mentioned in the archiecture to implement the code. The code will TERMINATE be optimised by time and space. Your code will also be well documented making use of comments. Make sure to save the code in a suitable .py file",
+    llm_config={
+        "config_list": config_list,
+    },
+    max_consecutive_auto_reply=2,
+    human_input_mode="TERMINATE",
+    
+)
+
+scrumMaster = TrackableAssistantAgent(
+    name="scrum",
+    system_message="""You are a helpful assistant. You suggest criteria for evaluating different tasks. They should be distinguishable, quantifiable and not redundant.
+    Convert the evaluation criteria into a list where each item is a criteria which consists of the following dictionary as follows
+    {"name": name of the criterion, "description": criteria description , "accepted_values": possible accepted inputs for this key}
+    Make sure "accepted_values" include the acceptable inputs for each key that are fine-grained and preferably multi-graded levels and "description" includes the criterion description.
+    """,
+    llm_config={
+        "config_list": config_list,
+    },
+    max_consecutive_auto_reply=2,
+    human_input_mode="TERMINATE",
+)
+
+Tester = TrackableAssistantAgent(
+    name="Tester",
+    system_message="You are a tester. You take the instructions of the scrum master and you evaluate the code built by the Software_Developer via unit teting. You will write code for the unit tests and then run the tests as a subprocess to test the code.",
+    llm_config={
+        "config_list": config_list,
+    },
+    max_consecutive_auto_reply=2,
+    human_input_mode="TERMINATE"
+)
+
+user_proxy = TrackableUserProxyAgent(
+    name="user",
+    max_consecutive_auto_reply=1,
+    llm_config={
+        "config_list": config_list,
+    },
+    human_input_mode="TERMINATE",
+    code_execution_config={
+        "working_dir": "coding",
+        "use_docker": False,
+    },
+)
+
+assistants = [BA, Architect, Developer, scrumMaster, Tester]
+
+
+with st.container():
+    user_input = st.chat_input("Enter your prompt")
+
+    if user_input:
+
+        st.write(total_history)
+        with open('file.txt', 'r') as f:
+            st.write(f.readlines())
+            if f.read() != '':
+                total_history = list(ast.literal_eval(f.readlines()[-1]))
+
+
+        groupchat = autogen.GroupChat(agents=assistants, messages=total_history, max_round=12, speaker_selection_method='round_robin',)
+        manager = autogen.GroupChatManager(groupchat=groupchat, llm_config={"config_list":config_list},)
+
+
+        chat = user_proxy.initiate_chat(
+            manager,
+            message=user_input,
+            summary_method="reflection_with_llm",
+            clear_history=False,
+        )
+        
+        with st.chat_message("assistant"):
+            st.write_stream(stream_data(chat.summary))
+            st.write_stream(chat.chat_history)
+        with st.chat_message("assisstant"):    
+            with open('file.txt','a') as f:
+                # print(chat.chat_history)
+                f.write(str(total_history)+'\n')
+            st.write(total_history)
+
+        
